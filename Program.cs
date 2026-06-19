@@ -1,21 +1,29 @@
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.Extensions.Options;
 using Scalar.AspNetCore;
+using Microsoft.EntityFrameworkCore;
+using TmsApi.Data;
+
 var builder = WebApplication.CreateBuilder(args);
+
+// Add services to the container.
 builder.Services.AddOpenApi();
+
 builder.Services
     .AddAuthentication("Training")
     .AddScheme<AuthenticationSchemeOptions, TrainingAuthHandler>("Training", null);
+
+// Database Connection
+builder.Services.AddDbContext<TmsDbContext>(options =>
+    options.UseNpgsql(builder.Configuration.GetConnectionString("TmsDb")));
+
 builder.Services.AddProblemDetails();
 builder.Services.AddAuthorization();
-builder.Services.AddScoped<IEnrollmentService, EnrollmentService>();
 builder.Services.AddControllers();
-builder.Services
-    .AddScoped<IEnrollmentService,
-               EnrollmentService>();
 
-builder.Services
-    .AddSingleton<EnrollmentWorker>();
+// Dependency Injection Registration
+builder.Services.AddScoped<IEnrollmentService, EnrollmentService>();
+builder.Services.AddSingleton<EnrollmentWorker>();
 
 builder.Services
     .AddOptions<PaymentOptions>()
@@ -25,37 +33,38 @@ builder.Services
 
 builder.Host.UseDefaultServiceProvider(options =>
 {
-options.ValidateScopes = true;
-options.ValidateOnBuild = true;
+    options.ValidateScopes = true;
+    options.ValidateOnBuild = true;
 });
 
 var app = builder.Build();
-if(app.Environment.IsDevelopment())
+
+// Configure the HTTP request pipeline.
+if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
     app.MapScalarApiReference();
 }
-else {
+else 
+{
     app.UseExceptionHandler();
 }
+
 app.UseHttpsRedirection();
-app.UseExceptionHandler();
 app.UseStatusCodePages();
+
 app.MapGet("/api/error", () =>
 {
-throw new TmsDatabaseException("Simulated database failure for ProblemDetails testing");
+    throw new TmsDatabaseException("Simulated database failure for ProblemDetails testing");
 });
 
 app.UseAuthentication();
 app.UseAuthorization();
-app.MapGet(
-"/api/enrollments/worker-smoke",
-(EnrollmentWorker worker) =>
+
+app.MapGet("/api/enrollments/worker-smoke", (EnrollmentWorker worker) =>
 {
     worker.ProcessBatch();
-
     return Results.Ok("processed");
-    
 });
 
 app.MapControllers();
