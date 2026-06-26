@@ -6,4 +6,18 @@ public class TmsDbContext(DbContextOptions<TmsDbContext>options) :DbContext(opti
     public DbSet<Student>Students => Set<Student>();
     public DbSet<Course> Courses =>Set<Course>();
     public DbSet<Enrollment>Enrollments => Set<Enrollment>();
-}
+    public DbSet<Assessment> Assessment => Set<Assessment>();
+    public DbSet<Certificate> Certificate => Set <Certificate>();
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        base.OnModelCreating(modelBuilder);
+        modelBuilder.ApplyConfiguration(new Configurations.StudentConfiguration());
+        modelBuilder.Entity<Student>()
+        .HasQueryFilter(s => !s.IsDeleted);
+        modelBuilder.Entity<Course>()
+        .HasIndex(c => c.Code)
+        .IsUnique();
+        modelBuilder.Entity<Course>()
+        .HasQueryFilter(c => !c.IsDeleted);
+    }
+} 
