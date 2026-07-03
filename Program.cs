@@ -4,6 +4,7 @@ using Scalar.AspNetCore;
 using Microsoft.EntityFrameworkCore;
 using TmsApi.Data;
 using TmsApi.Entities;
+using TmsApi.Services; // የ Course እና Enrollment ሰርቪሶች እንዲታዩ የተጨመረ
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -20,6 +21,7 @@ builder.Services.AddDbContext<TmsDbContext>(options =>
            .LogTo(Console.WriteLine, LogLevel.Information)
            .EnableSensitiveDataLogging()
 );
+
 builder.Services.AddProblemDetails();
 builder.Services.AddAuthorization();
 builder.Services.AddControllers();
@@ -27,6 +29,7 @@ builder.Services.AddControllers();
 // Dependency Injection Registration
 builder.Services.AddScoped<IEnrollmentService, EnrollmentService>();
 builder.Services.AddSingleton<EnrollmentWorker>();
+builder.Services.AddScoped<ICourseService, CourseService>();
 
 builder.Services
     .AddOptions<PaymentOptions>()
@@ -46,19 +49,17 @@ var app = builder.Build();
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
+    builder.Services.AddProblemDetails(); // ለ Development ማረጋገጫ
     app.MapScalarApiReference();
 }
-else 
-{
-    app.UseExceptionHandler();
-}
 
+app.UseExceptionHandler(); // ከኢንቫይሮንመንት ውጭ ለሁሉም እንዲሰራ ከላይ መሆኑ ይመረጣል
 app.UseHttpsRedirection();
 app.UseStatusCodePages();
 
 app.MapGet("/api/error", () =>
 {
-    throw new TmsDatabaseException("Simulated database failure for ProblemDetails testing");
+    throw new Exception("Simulated database failure for ProblemDetails testing");
 });
 
 app.UseAuthentication();
@@ -72,18 +73,21 @@ app.MapGet("/api/enrollments/worker-smoke", (EnrollmentWorker worker) =>
 
 app.MapControllers();
 
+// Database Migration, Seeding and Soft-Delete Testing
 using (var scope = app.Services.CreateScope())
 {
     var context = scope.ServiceProvider.GetRequiredService<TmsDbContext>();
 
+    // ዳታቤዙን ማይግሬት ማድረግ
     context.Database.Migrate();
 
+    // ዳታቤዙ ባዶ ከሆነ መረጃ መሙላት (Seeding)
     if (!context.Students.Any())
     {
         var students = new List<Student>
         {
             new() { RegistrationNumber = "TMS-2026-0001", Name = "Alice Smith", GPA = 3.8m, IsActive = true },
-             new() { RegistrationNumber = "TMS-2026-0006", Name = "foziya", GPA = 2.5m, IsActive = true },
+            new() { RegistrationNumber = "TMS-2026-0006", Name = "foziya", GPA = 2.5m, IsActive = true },
             new() { RegistrationNumber = "TMS-2026-0002", Name = "Bob Jones", GPA = 2.9m, IsActive = true },
             new() { RegistrationNumber = "TMS-2026-0003", Name = "Charlie Brown", GPA = 3.4m, IsActive = false },
             new() { RegistrationNumber = "TMS-2026-0004", Name = "Diana Prince", GPA = 3.9m, IsActive = true },
@@ -100,7 +104,6 @@ using (var scope = app.Services.CreateScope())
         };
 
         context.Courses.AddRange(courses);
-
         context.SaveChanges();
 
         var enrollments = new List<Enrollment>
@@ -112,44 +115,34 @@ using (var scope = app.Services.CreateScope())
         };
 
         context.Enrollments.AddRange(enrollments);
-
         context.SaveChanges();
     }
-    using (var Testscope = app.Services.CreateScope())
+
+    // የ Soft-Delete ሙከራ ክፍል (የተስተካከለ ቅንፍ)
+    Console.WriteLine("====== Soft-Delete ======");
+    var studentToTest = await context.Students.FirstOrDefaultAsync();
+    
+    if (studentToTest != null)
     {
-        var db =scope.ServiceProvider.GetRequiredService<TmsApi.Data.TmsDbContext>();
-        Console.WriteLine("====== Soft-Delete ======");
-        var Student= await db.Students.FirstOrDefaultAsync();
-        if (Student != null)
-        {
-            Student.IsDeleted = true;
-            await db.SaveChangesAsync();
-            Console.WriteLine($"{Student.Name} soft-deleted");
-            var normalQueryStudent = await db.Students
-            .FirstOrDefaultAsync(s =>s.Id == Student.Id);
-           Console.WriteLine($" Normal user found: {(normalQueryStudent == null ? "No (Hidden)" : "Found it")}");
-           var adminQueryStudent = await db.Students
-           .IgnoreQueryFilters()
-           .FirstOrDefaultAsync(s => s.Id == Student.Id);
-          Console.WriteLine($" Admin found: {(adminQueryStudent != null ? "Found it (Can view)" : "No")}");
-
-
-        }
+        studentToTest.IsDeleted = true;
+        await context.SaveChangesAsync();
+        Console.WriteLine($"{studentToTest.Name} soft-deleted");
         
+        var normalQueryStudent = await context.Students
+            .FirstOrDefaultAsync(s => s.Id == studentToTest.Id);
+        Console.WriteLine($" Normal user found: {(normalQueryStudent == null ? "No (Hidden)" : "Found it")}");
         
-         else
+        var adminQueryStudent = await context.Students
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(s => s.Id == studentToTest.Id);
+        Console.WriteLine($" Admin found: {(adminQueryStudent != null ? "Found it (Can view)" : "No")}");
+    }
+    else
     {
         Console.WriteLine("Test student data not found in the database!");
-
     }
-
     Console.WriteLine("=======================================");   
-        
-        
-    
-
-
-        
-app.Run();
-    }
 }
+
+
+app.Run();

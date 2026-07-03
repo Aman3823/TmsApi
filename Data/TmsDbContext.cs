@@ -11,13 +11,9 @@ public class TmsDbContext(DbContextOptions<TmsDbContext>options) :DbContext(opti
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
-        modelBuilder.ApplyConfiguration(new Configurations.StudentConfiguration());
+       modelBuilder.ApplyConfigurationsFromAssembly(typeof(TmsDbContext).Assembly);
         modelBuilder.Entity<Student>()
-        .HasQueryFilter(s => !s.IsDeleted);
-        modelBuilder.Entity<Course>()
-        .HasIndex(c => c.Code)
-        .IsUnique();
-        modelBuilder.Entity<Course>()
-        .HasQueryFilter(c => !c.IsDeleted);
+        .HasQueryFilter(s => !s.IsDeleted);  
+
     }
 } 

@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using TmsApi.Services;
 
 public class EnrollmentWorker
 {
@@ -16,7 +17,9 @@ public class EnrollmentWorker
         var service = scope.ServiceProvider
             .GetRequiredService<IEnrollmentService>();
 
-        var count = service.GetAllAsync().Result.Count;
+        // .Result ከተጠቀምክ በኋላ በቀጥታ ሊንክ .Count() በመጠቀም እንቆጥራለን
+        var enrollments = service.GetAllAsync().Result;
+        var count = enrollments.Count();
 
         Console.WriteLine($"Found {count} enrollments");
     }
