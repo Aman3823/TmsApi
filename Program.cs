@@ -17,7 +17,7 @@ builder.Services
 
 // Database Connection
 builder.Services.AddDbContext<TmsDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("TmsDb"))
+    options.UseNpgsql(builder.Configuration.GetConnectionString("TmsDatabase"))
            .LogTo(Console.WriteLine, LogLevel.Information)
            .EnableSensitiveDataLogging()
 );
@@ -53,7 +53,7 @@ if (app.Environment.IsDevelopment())
     app.MapScalarApiReference();
 }
 
-app.UseExceptionHandler(); // ከኢንቫይሮንመንት ውጭ ለሁሉም እንዲሰራ ከላይ መሆኑ ይመረጣል
+app.UseExceptionHandler(); 
 app.UseHttpsRedirection();
 app.UseStatusCodePages();
 
@@ -81,7 +81,6 @@ using (var scope = app.Services.CreateScope())
     // ዳታቤዙን ማይግሬት ማድረግ
     context.Database.Migrate();
 
-    // ዳታቤዙ ባዶ ከሆነ መረጃ መሙላት (Seeding)
     if (!context.Students.Any())
     {
         var students = new List<Student>
@@ -118,13 +117,13 @@ using (var scope = app.Services.CreateScope())
         context.SaveChanges();
     }
 
-    // የ Soft-Delete ሙከራ ክፍል (የተስተካከለ ቅንፍ)
+    // የ Soft-Delete
     Console.WriteLine("====== Soft-Delete ======");
     var studentToTest = await context.Students.FirstOrDefaultAsync();
     
     if (studentToTest != null)
     {
-        studentToTest.IsDeleted = true;
+        // studentToTest.IsDeleted = true;
         await context.SaveChangesAsync();
         Console.WriteLine($"{studentToTest.Name} soft-deleted");
         
