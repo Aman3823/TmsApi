@@ -4,6 +4,7 @@ using Scalar.AspNetCore;
 using Microsoft.EntityFrameworkCore;
 using TmsApi.Data;
 using TmsApi.Entities;
+using TmsApi.Filters;
 using TmsApi.Services; // የ Course እና Enrollment ሰርቪሶች እንዲታዩ የተጨመረ
 
 var builder = WebApplication.CreateBuilder(args);
@@ -30,6 +31,10 @@ builder.Services.AddControllers();
 builder.Services.AddScoped<IEnrollmentService, EnrollmentService>();
 builder.Services.AddSingleton<EnrollmentWorker>();
 builder.Services.AddScoped<ICourseService, CourseService>();
+builder.Services.AddControllers(Options =>
+{
+    Options.Filters.Add<AuditLogFilter>();
+});
 
 builder.Services
     .AddOptions<PaymentOptions>()
@@ -49,7 +54,6 @@ var app = builder.Build();
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
-    builder.Services.AddProblemDetails(); // ለ Development ማረጋገጫ
     app.MapScalarApiReference();
 }
 
@@ -80,6 +84,10 @@ using (var scope = app.Services.CreateScope())
 
     // ዳታቤዙን ማይግሬት ማድረግ
     context.Database.Migrate();
+    if(app.Environment.IsDevelopment())
+    {
+        await DataSeeder.SeedAsync(context);
+    }
 
     if (!context.Students.Any())
     {
@@ -95,25 +103,25 @@ using (var scope = app.Services.CreateScope())
 
         context.Students.AddRange(students);
 
-        var courses = new List<Course>
-        {
-            new() { Code = "CS-101", Title = "Introduction to Computer Science", MaxCapacity = 30 },
-            new() { Code = "CS-201", Title = "Data Structures and Algorithms", MaxCapacity = 25 },
-            new() { Code = "MAT-101", Title = "Calculus I", MaxCapacity = 40 }
-        };
+        // var courses = new List<Course>
+        // {
+        //     new() { Code = "CS-101", Title = "Introduction to Computer Science", MaxCapacity = 30 },
+        //     new() { Code = "CS-201", Title = "Data Structures and Algorithms", MaxCapacity = 25 },
+        //     new() { Code = "MAT-101", Title = "Calculus I", MaxCapacity = 40 }
+        // };
 
-        context.Courses.AddRange(courses);
-        context.SaveChanges();
+        // context.Courses.AddRange(courses);
+        // context.SaveChanges();
 
-        var enrollments = new List<Enrollment>
-        {
-            new() { StudentId = students[0].Id, CourseId = courses[0].Id, Grade = 4.0m },
-            new() { StudentId = students[0].Id, CourseId = courses[1].Id, Grade = 3.6m },
-            new() { StudentId = students[1].Id, CourseId = courses[0].Id, Grade = 2.8m },
-            new() { StudentId = students[3].Id, CourseId = courses[0].Id, Grade = 3.9m }
-        };
+        // var enrollments = new List<Enrollment>
+        // {
+        //     new() { StudentId = students[0].Id, CourseId = courses[0].Id, Grade = 4.0m },
+        //     new() { StudentId = students[0].Id, CourseId = courses[1].Id, Grade = 3.6m },
+        //     new() { StudentId = students[1].Id, CourseId = courses[0].Id, Grade = 2.8m },
+        //     new() { StudentId = students[3].Id, CourseId = courses[0].Id, Grade = 3.9m }
+        // };
 
-        context.Enrollments.AddRange(enrollments);
+        // context.Enrollments.AddRange(enrollments);
         context.SaveChanges();
     }
 
@@ -123,7 +131,7 @@ using (var scope = app.Services.CreateScope())
     
     if (studentToTest != null)
     {
-        // studentToTest.IsDeleted = true;
+         studentToTest.IsDeleted = true;
         await context.SaveChangesAsync();
         Console.WriteLine($"{studentToTest.Name} soft-deleted");
         
@@ -141,6 +149,7 @@ using (var scope = app.Services.CreateScope())
         Console.WriteLine("Test student data not found in the database!");
     }
     Console.WriteLine("=======================================");   
+    
 }
 
 

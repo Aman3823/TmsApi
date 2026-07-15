@@ -122,7 +122,6 @@ C:\Users\PC\TmsApi\bin\Debug\net10.0\TmsApi.dll
 C:\Users\PC\TmsApi\bin\Debug\net10.0\TmsApi.pdb
 C:\Users\PC\TmsApi\obj\Debug\net10.0\TmsApi.genruntimeconfig.cache
 C:\Users\PC\TmsApi\obj\Debug\net10.0\ref\TmsApi.dll
-C:\Users\CSUG\Documents\aman\TmsApi\bin\Debug\net10.0\appsettings.Development.json
 C:\Users\CSUG\Documents\aman\TmsApi\bin\Debug\net10.0\appsettings.json
 C:\Users\CSUG\Documents\aman\TmsApi\bin\Debug\net10.0\TmsApi.staticwebassets.endpoints.json
 C:\Users\CSUG\Documents\aman\TmsApi\bin\Debug\net10.0\TmsApi.exe
