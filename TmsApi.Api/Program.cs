@@ -1,15 +1,36 @@
 using Microsoft.AspNetCore.Authentication;
 using Asp.Versioning;
+using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.Extensions.Caching.Hybrid;
+using TmsApi.Api.RateLimiting;
+using TmsApi.Application.Interfaces;
+using TmsApi.Infrastructure.Services;
 using TmsApi.Api.Filters;
 using Scalar.AspNetCore;
 using Microsoft.EntityFrameworkCore;
-using TmsApi.Application.Interfaces;
 using TmsApi.Domain.Entities;
 using TmsApi.Infrastructure.Persistence;
-using TmsApi.Infrastructure.Services;
-using Microsoft.Extensions.Options; // የ Course እና Enrollment ሰርቪሶች እንዲታዩ የተጨመረ
+using Microsoft.Extensions.Options;
+using TmsApi.Infrastructure.Repositories;
+using TmsApi.Application.Enrollments.Commands;
+using FluentValidation;
+using MediatR;
+using TmsApi.Application.Behaviors;
+using TmsApi.Api.ExceptionHandlers; // የ Course እና Enrollment ሰርቪሶች እንዲታዩ የተጨመረ
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddHybridCache();
+builder.Services.AddCors(Options =>
+{
+    Options.AddPolicy("AllowAngular",policy =>
+    policy.WithOrigins("http://localhost:4200")
+    .AllowAnyHeader()
+    .AllowAnyMethod());
+
+});
+
 builder.Services.AddApiVersioning(Options=>
 {
     Options.DefaultApiVersion = new ApiVersion(1, 0);
@@ -17,10 +38,94 @@ builder.Services.AddApiVersioning(Options=>
     Options.ReportApiVersions = true;
     Options.ApiVersionReader = new UrlSegmentApiVersionReader();
 })
+
 .AddApiExplorer(Options =>
 {
     Options.GroupNameFormat = "'v'VVV";
     Options.SubstituteApiVersionInUrl =true;
+});
+builder.Services.AddHybridCache(options =>
+{
+    options.DefaultEntryOptions = new HybridCacheEntryOptions
+    {
+        Expiration = TimeSpan.FromMinutes(10),
+        LocalCacheExpiration = TimeSpan.FromMinutes(2)
+    };
+});
+builder.Services.AddScoped<ICourseService, CourseService>();
+builder.Services.AddScoped<ICachedCourseService, CachedCourseService>();
+// --- 2. Rate Limiting Registration ---
+builder.Services.AddRateLimiter(options =>
+{
+    // Global Tier-Aware Token Bucket
+    options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
+    {
+        var (partitionKey, tier) = ApiKeyResolver.Resolve(httpContext);
+
+        return tier switch
+        {
+            ApiKeyTier.Paid => RateLimitPartition.GetTokenBucketLimiter(
+                partitionKey: $"paid:{partitionKey}",
+                factory: _ => new TokenBucketRateLimiterOptions
+                {
+                    TokenLimit = 200,
+                    TokensPerPeriod = 100,
+                    ReplenishmentPeriod = TimeSpan.FromSeconds(10),
+                    QueueLimit = 0,
+                    AutoReplenishment = true
+                }),
+            ApiKeyTier.Free => RateLimitPartition.GetTokenBucketLimiter(
+                partitionKey: $"free:{partitionKey}",
+                factory: _ => new TokenBucketRateLimiterOptions
+                {
+                    TokenLimit = 30,
+                    TokensPerPeriod = 10,
+                    ReplenishmentPeriod = TimeSpan.FromSeconds(10),
+                    QueueLimit = 0,
+                    AutoReplenishment = true
+                }),
+            _ => RateLimitPartition.GetTokenBucketLimiter(
+                partitionKey: $"anon:{partitionKey}",
+                factory: _ => new TokenBucketRateLimiterOptions
+                {
+                    TokenLimit = 10,
+                    TokensPerPeriod = 5,
+                    ReplenishmentPeriod = TimeSpan.FromSeconds(10),
+                    QueueLimit = 0,
+                    AutoReplenishment = true
+                })
+        };
+    });
+
+    // Concurrency Limiter for expensive endpoints (e.g. Transcripts)
+    options.AddConcurrencyLimiter("transcripts", opt =>
+    {
+        opt.PermitLimit = 5;
+        opt.QueueLimit = 20;
+        opt.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+    });
+
+    // Response Config for 429 Rejections (RFC 7807 compliant with Dynamic Retry-After)
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.OnRejected = async (context, ct) =>
+    {
+        var retryAfter = "10";
+        if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var ts))
+        {
+            retryAfter = ((int)ts.TotalSeconds).ToString();
+        }
+
+        context.HttpContext.Response.Headers.RetryAfter = retryAfter;
+        context.HttpContext.Response.ContentType = "application/problem+json";
+
+        await context.HttpContext.Response.WriteAsJsonAsync(new ProblemDetails
+        {
+            Title = "Rate limit exceeded",
+            Detail = $"Too many requests. Retry after {retryAfter} seconds.",
+            Status = StatusCodes.Status429TooManyRequests,
+            Type = "https://tms.local/errors/rate_limit_exceeded"
+        }, ct);
+    };
 });
 // Add services to the container.
 builder.Services.AddOpenApi();
@@ -42,8 +147,21 @@ builder.Services.AddControllers();
 
 // Dependency Injection Registration
 builder.Services.AddScoped<IEnrollmentService, EnrollmentService>();
+// Repositories
+builder.Services.AddScoped<ICourseRepository,CourseRepository>();
+builder.Services.AddScoped<IEnrollmentRepository,EnrollmentRepository>();
 builder.Services.AddSingleton<EnrollmentWorker>();
 builder.Services.AddScoped<ICourseService, CourseService>();
+// MediatR & Validation
+builder.Services.AddMediatR(cfg =>
+cfg.RegisterServicesFromAssembly(typeof(EnrollStudentHandler).Assembly));
+builder.Services.AddValidatorsFromAssembly(typeof(EnrollStudentValidator).Assembly);
+// Pipeline Behaviors (Logging FIRST, Validation SECOND)
+builder.Services.AddTransient(typeof(IPipelineBehavior<,>), typeof(LoggingBehavior<,>));
+builder.Services.AddTransient(typeof(IPipelineBehavior<,>),typeof(ValidationBehavior<,>));
+// Exception Handling
+builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
+builder.Services.AddProblemDetails();
 builder.Services.AddControllers(Options =>
 {
     Options.Filters.Add<AuditLogFilter>();
@@ -69,7 +187,7 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
     app.MapScalarApiReference();
 }
-
+app.UseCors("AllowAngular");
 app.UseExceptionHandler(); 
 app.UseHttpsRedirection();
 app.UseStatusCodePages();

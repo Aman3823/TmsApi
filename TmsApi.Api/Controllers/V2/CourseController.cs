@@ -13,7 +13,8 @@ namespace TmsApi.Api.Controllers.V2;
 [Tags("Courses")]
 [Produces("application/json")]
 [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status500InternalServerError)]
-public class CoursesController(ICourseService courseService, LinkGenerator linkGenerator) : ControllerBase
+// 1. ICourseService የነበረውን ወደ ICachedCourseService ቀይረው:
+public class CoursesController(ICachedCourseService courseService, LinkGenerator linkGenerator) : ControllerBase
 {
     [HttpGet("{id:int}", Name = "GetCourseById_V2")]
     [ProducesResponseType(typeof(CourseDetailDto), StatusCodes.Status200OK)]
@@ -102,9 +103,9 @@ public class CoursesController(ICourseService courseService, LinkGenerator linkG
     [EndpointDescription("Returns data, meta, and links envelope structure for V2.")]
     public async Task<IActionResult> GetCourses([FromQuery] PagedRequest request, CancellationToken ct)
     {
+        // 2. አሁን በ ICachedCourseService በኩል ያመጣል:
         var result = await courseService.GetCoursesAsync(request, ct);
 
-        // Exercise 1 V2 Envelope Format (data, meta, links)
         var page = request.Page <= 0 ? 1 : request.Page;
         var pageSize = request.PageSize <= 0 ? 20 : Math.Clamp(request.PageSize, 1, 50);
         
