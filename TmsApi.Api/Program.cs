@@ -1,5 +1,10 @@
 using Microsoft.AspNetCore.Authentication;
 using Asp.Versioning;
+using TmsApi.Application.Notifications;
+using TmsApi.Api.Notifications;
+using TmsApi.Infrastructure.Transcripts;
+using System.Threading.Channels;
+using TmsApi.Application.Transcripts;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
@@ -17,33 +22,44 @@ using TmsApi.Infrastructure.Repositories;
 using TmsApi.Application.Enrollments.Commands;
 using FluentValidation;
 using MediatR;
+using TmsApi.Infrastructure.Workers;
 using TmsApi.Application.Behaviors;
-using TmsApi.Api.ExceptionHandlers; // የ Course እና Enrollment ሰርቪሶች እንዲታዩ የተጨመረ
+using TmsApi.Api.ExceptionHandlers;
+using TmsApi.Api.Hubs;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// --- 1. CORS Configuration (Fix for Http failure response 0) ---
+builder.Services.AddCors(options =>
+{
+options.AddPolicy("AllowAngular", policy =>
+policy.WithOrigins("http://localhost:4200")
+.AllowAnyHeader()
+.AllowAnyMethod());
+});
+
 builder.Services.AddHybridCache();
-builder.Services.AddCors(Options =>
+builder.Services.AddSignalR();
+builder.Services.AddSingleton<ITranscriptNotificationService,SignalRTranscriptNotificationService>();
+builder.Services.AddSingleton(Channel.CreateBounded<TranscriptRequest>(new BoundedChannelOptions(100)
 {
-    Options.AddPolicy("AllowAngular",policy =>
-    policy.WithOrigins("http://localhost:4200")
-    .AllowAnyHeader()
-    .AllowAnyMethod());
-
-});
-
-builder.Services.AddApiVersioning(Options=>
-{
-    Options.DefaultApiVersion = new ApiVersion(1, 0);
-    Options.AssumeDefaultVersionWhenUnspecified = true;
-    Options.ReportApiVersions = true;
-    Options.ApiVersionReader = new UrlSegmentApiVersionReader();
+    FullMode =BoundedChannelFullMode.Wait
 })
+);
 
-.AddApiExplorer(Options =>
+builder.Services.AddApiVersioning(options =>
 {
-    Options.GroupNameFormat = "'v'VVV";
-    Options.SubstituteApiVersionInUrl =true;
+    options.DefaultApiVersion = new ApiVersion(2, 0);
+    options.AssumeDefaultVersionWhenUnspecified = true;
+    options.ReportApiVersions = true;
+    options.ApiVersionReader = new UrlSegmentApiVersionReader();
+})
+.AddApiExplorer(options =>
+{
+    options.GroupNameFormat = "'v'VVV";
+    options.SubstituteApiVersionInUrl = true;
 });
+
 builder.Services.AddHybridCache(options =>
 {
     options.DefaultEntryOptions = new HybridCacheEntryOptions
@@ -52,12 +68,13 @@ builder.Services.AddHybridCache(options =>
         LocalCacheExpiration = TimeSpan.FromMinutes(2)
     };
 });
+
 builder.Services.AddScoped<ICourseService, CourseService>();
 builder.Services.AddScoped<ICachedCourseService, CachedCourseService>();
+
 // --- 2. Rate Limiting Registration ---
 builder.Services.AddRateLimiter(options =>
 {
-    // Global Tier-Aware Token Bucket
     options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
     {
         var (partitionKey, tier) = ApiKeyResolver.Resolve(httpContext);
@@ -97,7 +114,6 @@ builder.Services.AddRateLimiter(options =>
         };
     });
 
-    // Concurrency Limiter for expensive endpoints (e.g. Transcripts)
     options.AddConcurrencyLimiter("transcripts", opt =>
     {
         opt.PermitLimit = 5;
@@ -105,7 +121,6 @@ builder.Services.AddRateLimiter(options =>
         opt.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
     });
 
-    // Response Config for 429 Rejections (RFC 7807 compliant with Dynamic Retry-After)
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
     options.OnRejected = async (context, ct) =>
     {
@@ -127,7 +142,7 @@ builder.Services.AddRateLimiter(options =>
         }, ct);
     };
 });
-// Add services to the container.
+
 builder.Services.AddOpenApi();
 
 builder.Services
@@ -143,28 +158,31 @@ builder.Services.AddDbContext<TmsDbContext>(options =>
 
 builder.Services.AddProblemDetails();
 builder.Services.AddAuthorization();
-builder.Services.AddControllers();
+builder.Services.AddHostedService<TranscriptWorker>();
 
 // Dependency Injection Registration
 builder.Services.AddScoped<IEnrollmentService, EnrollmentService>();
-// Repositories
-builder.Services.AddScoped<ICourseRepository,CourseRepository>();
-builder.Services.AddScoped<IEnrollmentRepository,EnrollmentRepository>();
+builder.Services.AddScoped<ICourseRepository, CourseRepository>();
+builder.Services.AddScoped<IEnrollmentRepository, EnrollmentRepository>();
 builder.Services.AddSingleton<EnrollmentWorker>();
-builder.Services.AddScoped<ICourseService, CourseService>();
+// 1. Status Store 
+builder.Services.AddSingleton<ITranscriptStatusStore, InMemoryTranscriptStatusStore>();
+// 2. Background Worker 
+builder.Services.AddHostedService<TranscriptWorker>();
 // MediatR & Validation
 builder.Services.AddMediatR(cfg =>
-cfg.RegisterServicesFromAssembly(typeof(EnrollStudentHandler).Assembly));
+    cfg.RegisterServicesFromAssembly(typeof(EnrollStudentHandler).Assembly));
 builder.Services.AddValidatorsFromAssembly(typeof(EnrollStudentValidator).Assembly);
-// Pipeline Behaviors (Logging FIRST, Validation SECOND)
+
+// Pipeline Behaviors
 builder.Services.AddTransient(typeof(IPipelineBehavior<,>), typeof(LoggingBehavior<,>));
-builder.Services.AddTransient(typeof(IPipelineBehavior<,>),typeof(ValidationBehavior<,>));
-// Exception Handling
+builder.Services.AddTransient(typeof(IPipelineBehavior<,>), typeof(ValidationBehavior<,>));
+
+// Exception Handling & Controllers
 builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
-builder.Services.AddProblemDetails();
-builder.Services.AddControllers(Options =>
+builder.Services.AddControllers(options =>
 {
-    Options.Filters.Add<AuditLogFilter>();
+    options.Filters.Add<AuditLogFilter>();
 });
 
 builder.Services
@@ -181,30 +199,36 @@ builder.Host.UseDefaultServiceProvider(options =>
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
+// --- HTTP Pipeline ---
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
     app.MapScalarApiReference();
 }
+
+// ⚠️ UseCors ከ Authentication/Authorization እና Routing በፊት መቀመጥ አለበት!
 app.UseCors("AllowAngular");
+
 app.UseExceptionHandler(); 
 app.UseHttpsRedirection();
 app.UseStatusCodePages();
+
+app.UseRateLimiter();
+app.MapHub<TmsHub>("/hubs/tms");
+app.UseAuthentication();
+app.UseAuthorization();
 
 app.MapGet("/api/error", () =>
 {
     throw new Exception("Simulated database failure for ProblemDetails testing");
 });
 
-app.UseAuthentication();
-app.UseAuthorization();
-
 app.MapGet("/api/enrollments/worker-smoke", (EnrollmentWorker worker) =>
 {
     worker.ProcessBatch();
     return Results.Ok("processed");
 });
+
 app.UseMiddleware<TmsApi.Api.Middleware.V1DeprecationMiddleware>();
 app.MapControllers();
 
@@ -213,9 +237,8 @@ using (var scope = app.Services.CreateScope())
 {
     var context = scope.ServiceProvider.GetRequiredService<TmsDbContext>();
 
-    // ዳታቤዙን ማይግሬት ማድረግ
     context.Database.Migrate();
-    if(app.Environment.IsDevelopment())
+    if (app.Environment.IsDevelopment())
     {
         await DataSeeder.SeedAsync(context);
     }
@@ -233,36 +256,15 @@ using (var scope = app.Services.CreateScope())
         };
 
         context.Students.AddRange(students);
-
-        // var courses = new List<Course>
-        // {
-        //     new() { Code = "CS-101", Title = "Introduction to Computer Science", MaxCapacity = 30 },
-        //     new() { Code = "CS-201", Title = "Data Structures and Algorithms", MaxCapacity = 25 },
-        //     new() { Code = "MAT-101", Title = "Calculus I", MaxCapacity = 40 }
-        // };
-
-        // context.Courses.AddRange(courses);
-        // context.SaveChanges();
-
-        // var enrollments = new List<Enrollment>
-        // {
-        //     new() { StudentId = students[0].Id, CourseId = courses[0].Id, Grade = 4.0m },
-        //     new() { StudentId = students[0].Id, CourseId = courses[1].Id, Grade = 3.6m },
-        //     new() { StudentId = students[1].Id, CourseId = courses[0].Id, Grade = 2.8m },
-        //     new() { StudentId = students[3].Id, CourseId = courses[0].Id, Grade = 3.9m }
-        // };
-
-        // context.Enrollments.AddRange(enrollments);
         context.SaveChanges();
     }
 
-    // የ Soft-Delete
     Console.WriteLine("====== Soft-Delete ======");
     var studentToTest = await context.Students.FirstOrDefaultAsync();
     
     if (studentToTest != null)
     {
-         studentToTest.IsDeleted = true;
+        studentToTest.IsDeleted = true;
         await context.SaveChangesAsync();
         Console.WriteLine($"{studentToTest.Name} soft-deleted");
         
@@ -280,8 +282,6 @@ using (var scope = app.Services.CreateScope())
         Console.WriteLine("Test student data not found in the database!");
     }
     Console.WriteLine("=======================================");   
-    
 }
-
 
 app.Run();

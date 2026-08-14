@@ -3,14 +3,56 @@ using MediatR;
 using Microsoft.AspNetCore.Mvc;
 using TmsApi.Application.Enrollments.Commands;
 using TmsApi.Application.Enrollments.Queries;
-
+using Microsoft.AspNetCore.SignalR;
+using TmsApi.Application.Hubs;
+using TmsApi.Api.Hubs;
 namespace TmsApi.Api.Controllers.V2;
 
 [ApiController]
 [Route("api/v{version:apiVersion}/enrollments")]
 [ApiVersion("2.0")]
-public class EnrollmentsController(IMediator mediator) : ControllerBase
+public class EnrollmentsController(IHubContext<TmsHub,ITmsHubClient>hubContext, IMediator mediator) : ControllerBase
 {
+    // 1. Mock Data የሚያወጣው GetAll
+    [HttpGet]
+    public IActionResult GetAll()
+    {
+        var mockEnrollments = new[]
+        {
+            new { 
+                id = "1", 
+                studentId = 101, 
+                studentName = "Liya Kebede", 
+                courseId = 201, 
+                courseName = "Angular Deep Dive", 
+                status = "Pending", 
+                enrolledAt = DateTime.UtcNow.ToString("o") 
+            },
+            new { 
+                id = "2", 
+                studentId = 102, 
+                studentName = "Aman Bekele", 
+                courseId = 202, 
+                courseName = ".NET Core Architecture", 
+                status = "Pending", 
+                enrolledAt = DateTime.UtcNow.ToString("o") 
+            }
+        };
+
+        return Ok(mockEnrollments);
+    }
+
+    // 2. HttpPost የተደረገው Approve (405 ኤረርን ይቀርፋል)
+    [HttpPost("{id}/approve")]
+    public async Task <IActionResult> Approve(string id)
+    
+    {
+        // 🎯 SignalR Broadcast: ለሁሉም Connected Clients መረጃውን ይልካል
+        await hubContext.Clients.All
+        .ReceiveEnrollmentStatusUpdated(id,"Approved");
+        return Ok();
+    }
+    
     [HttpPost]
     public async Task<IActionResult> Enroll(
         EnrollStudentCommand command, CancellationToken ct)
@@ -37,7 +79,7 @@ public class EnrollmentsController(IMediator mediator) : ControllerBase
                     detail: error.Message,
                     type: $"https://tms.local/errors/{error.Code}");
             });
-    } // <-- Enroll method እዚጋ ይዘጋል
+    }
 
     [HttpGet("{studentId}/schedule")]
     public async Task<IActionResult> GetSchedule(
