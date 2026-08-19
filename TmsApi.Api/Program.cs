@@ -26,26 +26,37 @@ using TmsApi.Infrastructure.Workers;
 using TmsApi.Application.Behaviors;
 using TmsApi.Api.ExceptionHandlers;
 using TmsApi.Api.Hubs;
-
+using Microsoft.AspNetCore.Antiforgery;
 var builder = WebApplication.CreateBuilder(args);
 
-// --- 1. CORS Configuration (Fix for Http failure response 0) ---
+// Load allowed origins from appsettings.Development.json
+var allowedOrigins = builder.Configuration
+    .GetSection("AllowedOrigins").Get<string[]>() 
+    ?? new[] { "http://localhost:4200" };
+builder.Services.AddAntiforgery(Options =>
+{
+  Options.HeaderName ="X-XSRF-TOKEN"  ;
+});
+// Register the named CORS policy "TmsClient"
 builder.Services.AddCors(options =>
 {
-options.AddPolicy("AllowAngular", policy =>
-policy.WithOrigins("http://localhost:4200")
-.AllowAnyHeader()
-.AllowAnyMethod());
+    options.AddPolicy("TmsClient", policy =>
+    {
+        policy.WithOrigins(allowedOrigins)
+              .AllowAnyHeader()
+              .AllowAnyMethod()
+              .AllowCredentials() // Vital for HttpOnly cookies & SignalR
+              .SetPreflightMaxAge(TimeSpan.FromMinutes(10));
+    });
 });
 
 builder.Services.AddHybridCache();
 builder.Services.AddSignalR();
-builder.Services.AddSingleton<ITranscriptNotificationService,SignalRTranscriptNotificationService>();
+builder.Services.AddSingleton<ITranscriptNotificationService, SignalRTranscriptNotificationService>();
 builder.Services.AddSingleton(Channel.CreateBounded<TranscriptRequest>(new BoundedChannelOptions(100)
 {
-    FullMode =BoundedChannelFullMode.Wait
-})
-);
+    FullMode = BoundedChannelFullMode.Wait
+}));
 
 builder.Services.AddApiVersioning(options =>
 {
@@ -72,7 +83,7 @@ builder.Services.AddHybridCache(options =>
 builder.Services.AddScoped<ICourseService, CourseService>();
 builder.Services.AddScoped<ICachedCourseService, CachedCourseService>();
 
-// --- 2. Rate Limiting Registration ---
+// --- Rate Limiting Registration ---
 builder.Services.AddRateLimiter(options =>
 {
     options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
@@ -158,17 +169,16 @@ builder.Services.AddDbContext<TmsDbContext>(options =>
 
 builder.Services.AddProblemDetails();
 builder.Services.AddAuthorization();
-builder.Services.AddHostedService<TranscriptWorker>();
 
 // Dependency Injection Registration
 builder.Services.AddScoped<IEnrollmentService, EnrollmentService>();
 builder.Services.AddScoped<ICourseRepository, CourseRepository>();
 builder.Services.AddScoped<IEnrollmentRepository, EnrollmentRepository>();
 builder.Services.AddSingleton<EnrollmentWorker>();
-// 1. Status Store 
+
 builder.Services.AddSingleton<ITranscriptStatusStore, InMemoryTranscriptStatusStore>();
-// 2. Background Worker 
 builder.Services.AddHostedService<TranscriptWorker>();
+
 // MediatR & Validation
 builder.Services.AddMediatR(cfg =>
     cfg.RegisterServicesFromAssembly(typeof(EnrollStudentHandler).Assembly));
@@ -206,18 +216,36 @@ if (app.Environment.IsDevelopment())
     app.MapScalarApiReference();
 }
 
-// ⚠️ UseCors ከ Authentication/Authorization እና Routing በፊት መቀመጥ አለበት!
-app.UseCors("AllowAngular");
-
 app.UseExceptionHandler(); 
 app.UseHttpsRedirection();
 app.UseStatusCodePages();
+
+// CORS is registered before Auth and RateLimiter
+app.UseCors("TmsClient");
 
 app.UseRateLimiter();
 app.MapHub<TmsHub>("/hubs/tms");
 app.UseAuthentication();
 app.UseAuthorization();
+// 🛡️ XSRF Token Cookie አዘጋጅቶ ለ Angular መላኪያ Middleware
+app.Use(async(context,next)=>
+{
+   // ተጠቃሚው Authenitcated ከሆነ ወይም "tms_auth" Cookie ካለው
+   if (context.User.Identity?.IsAuthenticated == true || context.Request.Cookies.ContainsKey("tms_auth"))
+    {
+       var antiforgery =context.RequestServices.GetRequiredService<IAntiforgery>();
+       var tokens =antiforgery.GetAndStoreTokens(context);
+       context.Response.Cookies.Append("XSRF-TOKEN",tokens.RequestToken!,
+       new CookieOptions
+       {
+           HttpOnly =false, // 👈 Angular በ JavaScript አውጥቶ በ Header እንዲልከው false መሆን አለበት!
+           Secure =!builder.Environment.IsDevelopment(),
+           SameSite =SameSiteMode.Strict
+       }) ;
 
+    }
+    await next(context);
+});
 app.MapGet("/api/error", () =>
 {
     throw new Exception("Simulated database failure for ProblemDetails testing");
