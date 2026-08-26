@@ -1,3 +1,5 @@
+using Microsoft.AspNetCore.Identity;
+using TmsApi.Infrastructure.Identity;
 using Microsoft.AspNetCore.Authentication;
 using Asp.Versioning;
 using TmsApi.Application.Notifications;
@@ -27,16 +29,19 @@ using TmsApi.Application.Behaviors;
 using TmsApi.Api.ExceptionHandlers;
 using TmsApi.Api.Hubs;
 using Microsoft.AspNetCore.Antiforgery;
+
 var builder = WebApplication.CreateBuilder(args);
 
 // Load allowed origins from appsettings.Development.json
 var allowedOrigins = builder.Configuration
     .GetSection("AllowedOrigins").Get<string[]>() 
     ?? new[] { "http://localhost:4200" };
-builder.Services.AddAntiforgery(Options =>
+
+builder.Services.AddAntiforgery(options =>
 {
-  Options.HeaderName ="X-XSRF-TOKEN"  ;
+    options.HeaderName = "X-XSRF-TOKEN";
 });
+
 // Register the named CORS policy "TmsClient"
 builder.Services.AddCors(options =>
 {
@@ -50,7 +55,24 @@ builder.Services.AddCors(options =>
     });
 });
 
-builder.Services.AddHybridCache();
+// ASP.NET Core Identity Registration
+builder.Services.AddIdentity<TmsUser, IdentityRole>(options =>
+{
+    // Enterprise Password Policy
+    options.Password.RequiredLength = 12;
+    options.Password.RequireUppercase = true;
+    options.Password.RequireDigit = true;
+    options.Password.RequireNonAlphanumeric = true;
+
+    // Brute-Force Lockout Protection
+    options.Lockout.MaxFailedAccessAttempts = 5;
+    options.Lockout.DefaultLockoutTimeSpan = TimeSpan.FromMinutes(15);
+    options.Lockout.AllowedForNewUsers = true;
+})
+.AddRoles<IdentityRole>()
+.AddEntityFrameworkStores<TmsDbContext>()
+.AddDefaultTokenProviders();
+
 builder.Services.AddSignalR();
 builder.Services.AddSingleton<ITranscriptNotificationService, SignalRTranscriptNotificationService>();
 builder.Services.AddSingleton(Channel.CreateBounded<TranscriptRequest>(new BoundedChannelOptions(100)
@@ -71,6 +93,7 @@ builder.Services.AddApiVersioning(options =>
     options.SubstituteApiVersionInUrl = true;
 });
 
+// HybridCache configuration
 builder.Services.AddHybridCache(options =>
 {
     options.DefaultEntryOptions = new HybridCacheEntryOptions
@@ -156,8 +179,9 @@ builder.Services.AddRateLimiter(options =>
 
 builder.Services.AddOpenApi();
 
+// Custom Scheme Registration
 builder.Services
-    .AddAuthentication("Training")
+    .AddAuthentication()
     .AddScheme<AuthenticationSchemeOptions, TrainingAuthHandler>("Training", null);
 
 // Database Connection
@@ -216,36 +240,39 @@ if (app.Environment.IsDevelopment())
     app.MapScalarApiReference();
 }
 
+app.UseStatusCodePages(); // Converts 4xx/5xx responses into standard ProblemDetails payloads
 app.UseExceptionHandler(); 
 app.UseHttpsRedirection();
-app.UseStatusCodePages();
 
 // CORS is registered before Auth and RateLimiter
 app.UseCors("TmsClient");
 
 app.UseRateLimiter();
-app.MapHub<TmsHub>("/hubs/tms");
+
+// SignalR Hub Endpoint
+app.MapHub<TmsHub>("/hubs/tms").RequireCors("TmsClient");
+
 app.UseAuthentication();
 app.UseAuthorization();
-// 🛡️ XSRF Token Cookie አዘጋጅቶ ለ Angular መላኪያ Middleware
-app.Use(async(context,next)=>
-{
-   // ተጠቃሚው Authenitcated ከሆነ ወይም "tms_auth" Cookie ካለው
-   if (context.User.Identity?.IsAuthenticated == true || context.Request.Cookies.ContainsKey("tms_auth"))
-    {
-       var antiforgery =context.RequestServices.GetRequiredService<IAntiforgery>();
-       var tokens =antiforgery.GetAndStoreTokens(context);
-       context.Response.Cookies.Append("XSRF-TOKEN",tokens.RequestToken!,
-       new CookieOptions
-       {
-           HttpOnly =false, // 👈 Angular በ JavaScript አውጥቶ በ Header እንዲልከው false መሆን አለበት!
-           Secure =!builder.Environment.IsDevelopment(),
-           SameSite =SameSiteMode.Strict
-       }) ;
 
+// XSRF Token Cookie middleware for Angular
+app.Use(async (context, next) =>
+{
+    if (context.User.Identity?.IsAuthenticated == true || context.Request.Cookies.ContainsKey("tms_auth"))
+    {
+        var antiforgery = context.RequestServices.GetRequiredService<IAntiforgery>();
+        var tokens = antiforgery.GetAndStoreTokens(context);
+        context.Response.Cookies.Append("XSRF-TOKEN", tokens.RequestToken!,
+        new CookieOptions
+        {
+            HttpOnly = false, // Allowed for Angular frontend to read and append to headers
+            Secure = !builder.Environment.IsDevelopment(),
+            SameSite = SameSiteMode.Strict
+        });
     }
     await next(context);
 });
+
 app.MapGet("/api/error", () =>
 {
     throw new Exception("Simulated database failure for ProblemDetails testing");
@@ -286,6 +313,20 @@ using (var scope = app.Services.CreateScope())
         context.Students.AddRange(students);
         context.SaveChanges();
     }
+
+    var service = new CryptoDemoService();
+    string hash1 = service.HashUserPasssword("password123!");
+    string hash2 = service.HashUserPasssword("password123!");
+    
+    // hash1 and hash2 are completely different strings because of unique random salts!
+    Console.WriteLine($"Hash 1: {hash1}");
+    Console.WriteLine($"Hash 2: {hash2}");
+    
+    // Fixed string cases for testing:
+    bool match1 = service.VerifyUserPassword("password123!", hash1); // true
+    bool match2 = service.VerifyUserPassword("password123!", hash2); // true
+    Console.WriteLine($"Password Verification Match 1: {match1}");
+    Console.WriteLine($"Password Verification Match 2: {match2}");
 
     Console.WriteLine("====== Soft-Delete ======");
     var studentToTest = await context.Students.FirstOrDefaultAsync();

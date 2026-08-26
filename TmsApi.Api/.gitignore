@@ -1,0 +1,7 @@
+# Build output folders
+**/[Bb]in/
+**/[Oo]bj/
+
+# IDE settings
+.vs/
+.vscode/
