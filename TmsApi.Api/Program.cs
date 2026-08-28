@@ -1,3 +1,5 @@
+using System.Text;
+using Microsoft.IdentityModel.Tokens;
 using Microsoft.AspNetCore.Identity;
 using TmsApi.Infrastructure.Identity;
 using Microsoft.AspNetCore.Authentication;
@@ -29,6 +31,7 @@ using TmsApi.Application.Behaviors;
 using TmsApi.Api.ExceptionHandlers;
 using TmsApi.Api.Hubs;
 using Microsoft.AspNetCore.Antiforgery;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -177,12 +180,33 @@ builder.Services.AddRateLimiter(options =>
     };
 });
 
-builder.Services.AddOpenApi();
+// Services Registration
+builder.Services.AddScoped<TokenService>();
 
-// Custom Scheme Registration
-builder.Services
-    .AddAuthentication()
-    .AddScheme<AuthenticationSchemeOptions, TrainingAuthHandler>("Training", null);
+// Authentication Configuration (Consolidated)
+builder.Services.AddAuthentication(options =>
+{
+    options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+    options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+})
+.AddJwtBearer(options =>
+{
+    options.TokenValidationParameters = new TokenValidationParameters
+    {
+        ValidateIssuer = true,
+        ValidateAudience = true,
+        ValidateLifetime = true,
+        ValidateIssuerSigningKey = true,
+        ValidIssuer = builder.Configuration["Jwt:Issuer"],
+        ValidAudience = builder.Configuration["Jwt:Audience"],
+        IssuerSigningKey = new SymmetricSecurityKey(
+            Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"]!)),
+        ClockSkew = TimeSpan.Zero
+    };
+})
+.AddScheme<AuthenticationSchemeOptions, TrainingAuthHandler>("Training", null);
+
+builder.Services.AddOpenApi();
 
 // Database Connection
 builder.Services.AddDbContext<TmsDbContext>(options =>
@@ -240,7 +264,7 @@ if (app.Environment.IsDevelopment())
     app.MapScalarApiReference();
 }
 
-app.UseStatusCodePages(); // Converts 4xx/5xx responses into standard ProblemDetails payloads
+app.UseStatusCodePages();
 app.UseExceptionHandler(); 
 app.UseHttpsRedirection();
 
@@ -265,7 +289,7 @@ app.Use(async (context, next) =>
         context.Response.Cookies.Append("XSRF-TOKEN", tokens.RequestToken!,
         new CookieOptions
         {
-            HttpOnly = false, // Allowed for Angular frontend to read and append to headers
+            HttpOnly = false,
             Secure = !builder.Environment.IsDevelopment(),
             SameSite = SameSiteMode.Strict
         });
@@ -287,7 +311,7 @@ app.MapGet("/api/enrollments/worker-smoke", (EnrollmentWorker worker) =>
 app.UseMiddleware<TmsApi.Api.Middleware.V1DeprecationMiddleware>();
 app.MapControllers();
 
-// Database Migration, Seeding and Soft-Delete Testing
+// Database Migration & Seeding
 using (var scope = app.Services.CreateScope())
 {
     var context = scope.ServiceProvider.GetRequiredService<TmsDbContext>();
@@ -297,60 +321,6 @@ using (var scope = app.Services.CreateScope())
     {
         await DataSeeder.SeedAsync(context);
     }
-
-    if (!context.Students.Any())
-    {
-        var students = new List<Student>
-        {
-            new() { RegistrationNumber = "TMS-2026-0001", Name = "Alice Smith", GPA = 3.8m, IsActive = true },
-            new() { RegistrationNumber = "TMS-2026-0006", Name = "foziya", GPA = 2.5m, IsActive = true },
-            new() { RegistrationNumber = "TMS-2026-0002", Name = "Bob Jones", GPA = 2.9m, IsActive = true },
-            new() { RegistrationNumber = "TMS-2026-0003", Name = "Charlie Brown", GPA = 3.4m, IsActive = false },
-            new() { RegistrationNumber = "TMS-2026-0004", Name = "Diana Prince", GPA = 3.9m, IsActive = true },
-            new() { RegistrationNumber = "TMS-2026-0005", Name = "Evan Wright", GPA = 2.5m, IsActive = true }
-        };
-
-        context.Students.AddRange(students);
-        context.SaveChanges();
-    }
-
-    var service = new CryptoDemoService();
-    string hash1 = service.HashUserPasssword("password123!");
-    string hash2 = service.HashUserPasssword("password123!");
-    
-    // hash1 and hash2 are completely different strings because of unique random salts!
-    Console.WriteLine($"Hash 1: {hash1}");
-    Console.WriteLine($"Hash 2: {hash2}");
-    
-    // Fixed string cases for testing:
-    bool match1 = service.VerifyUserPassword("password123!", hash1); // true
-    bool match2 = service.VerifyUserPassword("password123!", hash2); // true
-    Console.WriteLine($"Password Verification Match 1: {match1}");
-    Console.WriteLine($"Password Verification Match 2: {match2}");
-
-    Console.WriteLine("====== Soft-Delete ======");
-    var studentToTest = await context.Students.FirstOrDefaultAsync();
-    
-    if (studentToTest != null)
-    {
-        studentToTest.IsDeleted = true;
-        await context.SaveChangesAsync();
-        Console.WriteLine($"{studentToTest.Name} soft-deleted");
-        
-        var normalQueryStudent = await context.Students
-            .FirstOrDefaultAsync(s => s.Id == studentToTest.Id);
-        Console.WriteLine($" Normal user found: {(normalQueryStudent == null ? "No (Hidden)" : "Found it")}");
-        
-        var adminQueryStudent = await context.Students
-            .IgnoreQueryFilters()
-            .FirstOrDefaultAsync(s => s.Id == studentToTest.Id);
-        Console.WriteLine($" Admin found: {(adminQueryStudent != null ? "Found it (Can view)" : "No")}");
-    }
-    else
-    {
-        Console.WriteLine("Test student data not found in the database!");
-    }
-    Console.WriteLine("=======================================");   
 }
 
 app.Run();
