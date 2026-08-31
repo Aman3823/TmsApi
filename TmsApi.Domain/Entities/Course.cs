@@ -6,5 +6,6 @@ public class Course
     public required string Title {get;set;}
     public int MaxCapacity {get;set;}
     public bool IsDeleted {get; set;}
+    public string? InstructorId {get;set;}
     public ICollection<Enrollment>Enrollments {get;set;} = new List<Enrollment>();
 }

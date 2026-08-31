@@ -1,3 +1,5 @@
+using Microsoft.AspNetCore.Authorization;
+using TmsApi.Api.Authorization;
 using System.Text;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.AspNetCore.Identity;
@@ -57,6 +59,9 @@ builder.Services.AddCors(options =>
               .SetPreflightMaxAge(TimeSpan.FromMinutes(10));
     });
 });
+builder.Services.AddScoped<IAuthorizationHandler,CourseInstructorHandler>();
+builder.Services.AddAuthorizationBuilder()
+.AddPolicy("CanEditCourse",policy =>policy.Requirements.Add(new CourseInstructorRequirement()));
 
 // ASP.NET Core Identity Registration
 builder.Services.AddIdentity<TmsUser, IdentityRole>(options =>

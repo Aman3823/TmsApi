@@ -4,16 +4,18 @@ using Microsoft.AspNetCore.Http;
 using Asp.Versioning;
 using TmsApi.Application.Dtos; 
 using TmsApi.Application.Interfaces;
-
+using Microsoft.AspNetCore.Authorization;
+using TmsApi.Application.Courses.Commands.UpdateCourse;
 namespace TmsApi.Api.Controllers.V1;
 
 [ApiVersion("1.0")]
 [ApiController]
+[Authorize(Roles ="Instructor,Admin")]
 [Route("api/v{version:apiVersion}/courses")]
 [Tags("Courses")]
 [Produces("application/json")]
 [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status500InternalServerError)]
-public class CoursesController(ICourseService courseService, LinkGenerator linkGenerator) : ControllerBase
+public class CoursesController(ICourseService courseService, LinkGenerator linkGenerator,IAuthorizationService authorizationService) : ControllerBase
 {
     [HttpGet("{id:int}", Name = nameof(GetCourseById))]
     [ProducesResponseType(typeof(CourseDetailDto), StatusCodes.Status200OK)]
@@ -104,5 +106,25 @@ public class CoursesController(ICourseService courseService, LinkGenerator linkG
     {
         var result = await courseService.GetCoursesAsync(request, ct);
         return Ok(result);
+
     }
+    [HttpPut("{id:guid}")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(typeof(ProblemDetails),StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(ProblemDetails),StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> UpdateCourse(int id,[FromBody] UpdateCourseCommand command, CancellationToken ct)
+    {
+      
+        
+        var course =await courseService.GetByIdAsync(id,ct);
+        if (course is null )return NotFound();
+        var authResult =await authorizationService.AuthorizeAsync(User,course,"CanEditCourse");
+        if (!authResult.Succeeded)
+        {
+            return Forbid();
+        }
+        await courseService.UpdateAsync(command,ct);
+        return NoContent();
+    }
+
 }
