@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using TmsApi.Api.Authorization;
 using System.Text;
 using Microsoft.IdentityModel.Tokens;
+using System.IdentityModel.Tokens.Jwt;
 using Microsoft.AspNetCore.Identity;
 using TmsApi.Infrastructure.Identity;
 using Microsoft.AspNetCore.Authentication;
@@ -35,6 +36,7 @@ using TmsApi.Api.Hubs;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 
+JwtSecurityTokenHandler.DefaultInboundClaimTypeMap.Clear();
 var builder = WebApplication.CreateBuilder(args);
 
 // Load allowed origins from appsettings.Development.json
@@ -59,9 +61,10 @@ builder.Services.AddCors(options =>
               .SetPreflightMaxAge(TimeSpan.FromMinutes(10));
     });
 });
-builder.Services.AddScoped<IAuthorizationHandler,CourseInstructorHandler>();
+
+builder.Services.AddScoped<IAuthorizationHandler, CourseInstructorHandler>();
 builder.Services.AddAuthorizationBuilder()
-.AddPolicy("CanEditCourse",policy =>policy.Requirements.Add(new CourseInstructorRequirement()));
+    .AddPolicy("CanEditCourse", policy => policy.Requirements.Add(new CourseInstructorRequirement()));
 
 // ASP.NET Core Identity Registration
 builder.Services.AddIdentity<TmsUser, IdentityRole>(options =>
@@ -87,14 +90,23 @@ builder.Services.AddSingleton(Channel.CreateBounded<TranscriptRequest>(new Bound
 {
     FullMode = BoundedChannelFullMode.Wait
 }));
+builder.Services.AddOpenApi(documentName:"v1",
+configureOptions:Options =>{Options.ShouldInclude =descriptor =>descriptor.GroupName == "v1";});
+builder.Services.AddOpenApi(documentName:"v2",
+configureOptions:Options =>{Options.ShouldInclude =descriptor =>descriptor.GroupName == "v2";});
 
 builder.Services.AddApiVersioning(options =>
 {
-    options.DefaultApiVersion = new ApiVersion(2, 0);
+    options.DefaultApiVersion = new ApiVersion(1, 0);
     options.AssumeDefaultVersionWhenUnspecified = true;
     options.ReportApiVersions = true;
     options.ApiVersionReader = new UrlSegmentApiVersionReader();
+    options.ApiVersionReader =ApiVersionReader.Combine(
+        new UrlSegmentApiVersionReader(),
+        new HeaderApiVersionReader("x-api-version")
+    );
 })
+
 .AddApiExplorer(options =>
 {
     options.GroupNameFormat = "'v'VVV";
@@ -117,6 +129,12 @@ builder.Services.AddScoped<ICachedCourseService, CachedCourseService>();
 // --- Rate Limiting Registration ---
 builder.Services.AddRateLimiter(options =>
 {
+    options.AddFixedWindowLimiter("AuthLimiter", opt =>
+    {
+        opt.PermitLimit = 5;
+        opt.Window = TimeSpan.FromMinutes(1);
+        opt.QueueLimit = 0;
+    });
     options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
     {
         var (partitionKey, tier) = ApiKeyResolver.Resolve(httpContext);
@@ -265,13 +283,40 @@ var app = builder.Build();
 // --- HTTP Pipeline ---
 if (app.Environment.IsDevelopment())
 {
-    app.MapOpenApi();
-    app.MapScalarApiReference();
+    app.MapOpenApi("/openapi/{documentName}.json");
+
+    app.MapScalarApiReference(options =>
+    {
+        options.WithTitle("TMS API Reference")
+               .WithTheme(ScalarTheme.Purple)
+               .WithOpenApiRoutePattern("/openapi/{documentName}.json");
+    });
 }
 
 app.UseStatusCodePages();
 app.UseExceptionHandler(); 
 app.UseHttpsRedirection();
+
+// Security Headers Middleware (Development አካባቢ ላይ Scalar እንዲሰራ CSP ተስተካክሏል)
+app.Use(async (context, next) =>
+{
+    context.Response.Headers.Append("X-Content-Type-Options", "nosniff");
+    context.Response.Headers.Append("X-Frame-Options", "DENY");
+    context.Response.Headers.Append("Referrer-Policy", "strict-origin-when-cross-origin");
+
+    if (app.Environment.IsDevelopment())
+    {
+        context.Response.Headers.Append("Content-Security-Policy",
+            "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; font-src 'self' https://cdn.jsdelivr.net; img-src 'self' data: https:;");
+    }
+    else
+    {
+        context.Response.Headers.Append("Content-Security-Policy",
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';");
+    }
+
+    await next();
+});
 
 // CORS is registered before Auth and RateLimiter
 app.UseCors("TmsClient");
