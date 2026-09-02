@@ -6,18 +6,19 @@ using TmsApi.Application.Dtos;
 using TmsApi.Application.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using TmsApi.Application.Courses.Commands.UpdateCourse;
+
 namespace TmsApi.Api.Controllers.V1;
 
 [ApiVersion("1.0")]
 [ApiController]
-[Authorize(Roles ="Instructor,Admin")]
 [Route("api/v{version:apiVersion}/courses")]
 [Tags("Courses")]
 [Produces("application/json")]
 [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status500InternalServerError)]
-public class CoursesController(ICourseService courseService, LinkGenerator linkGenerator,IAuthorizationService authorizationService) : ControllerBase
+public class CoursesController(ICourseService courseService, LinkGenerator linkGenerator, IAuthorizationService authorizationService) : ControllerBase
 {
     [HttpGet("{id:int}", Name = nameof(GetCourseById))]
+    [Authorize]
     [ProducesResponseType(typeof(CourseDetailDto), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     [EndpointSummary("Get a course by ID")]
@@ -32,19 +33,15 @@ public class CoursesController(ICourseService courseService, LinkGenerator linkG
 
         var links = new List<LinkDto>();
 
-        // 1. "self" Link
         var selfHref = linkGenerator.GetPathByName(HttpContext, nameof(GetCourseById), new { id });
         links.Add(new LinkDto(selfHref ?? $"/api/v1/courses/{id}", "self", "GET"));
 
-        // 2. "update" Link
         var updateHref = linkGenerator.GetPathByName(HttpContext, nameof(GetCourseById), new { id });
         links.Add(new LinkDto(updateHref ?? $"/api/v1/courses/{id}", "update", "PUT"));
 
-        // 3. "delete" Link
         var deleteHref = linkGenerator.GetPathByName(HttpContext, nameof(GetCourseById), new { id });
         links.Add(new LinkDto(deleteHref ?? $"/api/v1/courses/{id}", "delete", "DELETE"));
 
-        // 4. "enrollments" Link
         var enrollmentsHref = linkGenerator.GetPathByAction(
             HttpContext,
             action: "GetEnrollments",
@@ -52,7 +49,6 @@ public class CoursesController(ICourseService courseService, LinkGenerator linkG
             values: new { courseId = id });
         links.Add(new LinkDto(enrollmentsHref ?? $"/api/v1/courses/{id}/enrollments", "enrollments", "GET"));
 
-        // 5. "enroll" Conditional Link
         if (course.EnrollmentCount < course.MaxCapacity)
         {
             var enrollHref = linkGenerator.GetPathByAction(
@@ -77,6 +73,7 @@ public class CoursesController(ICourseService courseService, LinkGenerator linkG
     }
 
     [HttpPost]
+    [Authorize(Roles = "Instructor,Admin")]
     [ProducesResponseType(typeof(CourseResponseDto), StatusCodes.Status201Created)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
@@ -99,6 +96,7 @@ public class CoursesController(ICourseService courseService, LinkGenerator linkG
     }
 
     [HttpGet]
+    [Authorize]
     [ProducesResponseType(typeof(PagedResponse<CourseResponseDto>), StatusCodes.Status200OK)]
     [EndpointSummary("List course with pagination")]
     [EndpointDescription("Returns a paginated, optionally filtered list of TMS courses. pageSize is capped at 50.")]
@@ -106,25 +104,25 @@ public class CoursesController(ICourseService courseService, LinkGenerator linkG
     {
         var result = await courseService.GetCoursesAsync(request, ct);
         return Ok(result);
-
     }
-    [HttpPut("{id:guid}")]
+
+    [HttpPut("{id:int}")]
+    [Authorize(Roles = "Instructor,Admin")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
-    [ProducesResponseType(typeof(ProblemDetails),StatusCodes.Status403Forbidden)]
-    [ProducesResponseType(typeof(ProblemDetails),StatusCodes.Status404NotFound)]
-    public async Task<IActionResult> UpdateCourse(int id,[FromBody] UpdateCourseCommand command, CancellationToken ct)
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> UpdateCourse(int id, [FromBody] UpdateCourseCommand command, CancellationToken ct)
     {
-      
+        var course = await courseService.GetByIdAsync(id, ct);
+        if (course is null) return NotFound();
         
-        var course =await courseService.GetByIdAsync(id,ct);
-        if (course is null )return NotFound();
-        var authResult =await authorizationService.AuthorizeAsync(User,course,"CanEditCourse");
+        var authResult = await authorizationService.AuthorizeAsync(User, course, "CanEditCourse");
         if (!authResult.Succeeded)
         {
             return Forbid();
         }
-        await courseService.UpdateAsync(command,ct);
+        
+        await courseService.UpdateAsync(command, ct);
         return NoContent();
     }
-
 }

@@ -10,6 +10,7 @@ namespace TmsApi.Api.Controllers.V2;
 
 [ApiController]
 [Route("api/v{version:apiVersion}/enrollments")]
+[Tags("Enrollments")]
 [ApiVersion("2.0")]
 public class EnrollmentsController(IHubContext<TmsHub,ITmsHubClient>hubContext, IMediator mediator) : ControllerBase
 {
