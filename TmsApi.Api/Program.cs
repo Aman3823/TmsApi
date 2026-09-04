@@ -90,23 +90,26 @@ builder.Services.AddSingleton(Channel.CreateBounded<TranscriptRequest>(new Bound
 {
     FullMode = BoundedChannelFullMode.Wait
 }));
-builder.Services.AddOpenApi(documentName:"v1",
-configureOptions:Options =>{Options.ShouldInclude =descriptor =>descriptor.GroupName == "v1";});
-builder.Services.AddOpenApi(documentName:"v2",
-configureOptions:Options =>{Options.ShouldInclude =descriptor =>descriptor.GroupName == "v2";});
+
+builder.Services.AddOpenApi(documentName: "v1", configureOptions: options =>
+{
+    options.ShouldInclude = descriptor => descriptor.GroupName == "v1";
+});
+builder.Services.AddOpenApi(documentName: "v2", configureOptions: options =>
+{
+    options.ShouldInclude = descriptor => descriptor.GroupName == "v2";
+});
 
 builder.Services.AddApiVersioning(options =>
 {
     options.DefaultApiVersion = new ApiVersion(1, 0);
     options.AssumeDefaultVersionWhenUnspecified = true;
     options.ReportApiVersions = true;
-    options.ApiVersionReader = new UrlSegmentApiVersionReader();
-    options.ApiVersionReader =ApiVersionReader.Combine(
+    options.ApiVersionReader = ApiVersionReader.Combine(
         new UrlSegmentApiVersionReader(),
         new HeaderApiVersionReader("x-api-version")
     );
 })
-
 .AddApiExplorer(options =>
 {
     options.GroupNameFormat = "'v'VVV";
@@ -206,7 +209,7 @@ builder.Services.AddRateLimiter(options =>
 // Services Registration
 builder.Services.AddScoped<TokenService>();
 
-// Authentication Configuration (Consolidated)
+// Authentication Configuration
 builder.Services.AddAuthentication(options =>
 {
     options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
@@ -226,10 +229,23 @@ builder.Services.AddAuthentication(options =>
             Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"]!)),
         ClockSkew = TimeSpan.Zero
     };
+
+    // Extract JWT token for SignalR WebSockets
+    options.Events = new JwtBearerEvents
+    {
+        OnMessageReceived = context =>
+        {
+            var accessToken = context.Request.Query["access_token"];
+            var path = context.HttpContext.Request.Path;
+            if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/hubs/tms"))
+            {
+                context.Token = accessToken;
+            }
+            return Task.CompletedTask;
+        }
+    };
 })
 .AddScheme<AuthenticationSchemeOptions, TrainingAuthHandler>("Training", null);
-
-builder.Services.AddOpenApi();
 
 // Database Connection
 builder.Services.AddDbContext<TmsDbContext>(options =>
@@ -239,7 +255,6 @@ builder.Services.AddDbContext<TmsDbContext>(options =>
 );
 
 builder.Services.AddProblemDetails();
-builder.Services.AddAuthorization();
 
 // Dependency Injection Registration
 builder.Services.AddScoped<IEnrollmentService, EnrollmentService>();
@@ -297,7 +312,7 @@ app.UseStatusCodePages();
 app.UseExceptionHandler(); 
 app.UseHttpsRedirection();
 
-// Security Headers Middleware (Development አካባቢ ላይ Scalar እንዲሰራ CSP ተስተካክሏል)
+// Security Headers Middleware
 app.Use(async (context, next) =>
 {
     context.Response.Headers.Append("X-Content-Type-Options", "nosniff");
@@ -318,13 +333,8 @@ app.Use(async (context, next) =>
     await next();
 });
 
-// CORS is registered before Auth and RateLimiter
 app.UseCors("TmsClient");
-
 app.UseRateLimiter();
-
-// SignalR Hub Endpoint
-app.MapHub<TmsHub>("/hubs/tms").RequireCors("TmsClient");
 
 app.UseAuthentication();
 app.UseAuthorization();
@@ -347,6 +357,9 @@ app.Use(async (context, next) =>
     await next(context);
 });
 
+// SignalR Hub Endpoint
+app.MapHub<TmsHub>("/hubs/tms").RequireCors("TmsClient");
+
 app.MapGet("/api/error", () =>
 {
     throw new Exception("Simulated database failure for ProblemDetails testing");
@@ -361,12 +374,17 @@ app.MapGet("/api/enrollments/worker-smoke", (EnrollmentWorker worker) =>
 app.UseMiddleware<TmsApi.Api.Middleware.V1DeprecationMiddleware>();
 app.MapControllers();
 
-// Database Migration & Seeding
+// Database Migration & Seeding (Fixes Integration Test Exception)
 using (var scope = app.Services.CreateScope())
 {
     var context = scope.ServiceProvider.GetRequiredService<TmsDbContext>();
 
-    context.Database.Migrate();
+    // Check if the provider is relational before running migrations
+    if (context.Database.IsRelational())
+    {
+        context.Database.Migrate();
+    }
+
     if (app.Environment.IsDevelopment())
     {
         await DataSeeder.SeedAsync(context);
@@ -374,3 +392,5 @@ using (var scope = app.Services.CreateScope())
 }
 
 app.Run();
+
+public partial class Program { }
